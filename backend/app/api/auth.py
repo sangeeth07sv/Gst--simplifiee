@@ -39,8 +39,6 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
-    # Deliberately same error for "no such user" and "wrong password" —
-    # avoids leaking which emails are registered.
     invalid_credentials = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password"
     )
@@ -56,18 +54,6 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED)
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    """
-    NOT WIRED TO A REAL EMAIL PROVIDER YET. This currently only logs the
-    reset request server-side. To make this functional:
-      1. Generate a signed, short-lived reset token (reuse create_access_token
-         with a `purpose: "password_reset"` claim, or a separate table).
-      2. Send it via an email provider (SMTP / SendGrid / SES) — see
-         backend/.env.example for where credentials would go.
-      3. Add POST /auth/reset-password to verify the token and update
-         hashed_password.
-    Always returns 202 regardless of whether the email exists, to avoid
-    leaking account existence.
-    """
     user = db.query(User).filter(User.email == payload.email).first()
     if user:
         logger.info("Password reset requested for user_id=%s (email sending not yet configured)", user.id)
@@ -79,4 +65,62 @@ def google_login():
     if not settings.google_client_id or not settings.google_redirect_uri:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Google Sign-In is not configured yet. Set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+            detail="Google Sign-In is not configured yet.",
+        )
+    params = {
+        "client_id": settings.google_client_id,
+        "redirect_uri": settings.google_redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return RedirectResponse(auth_url)
+
+
+@router.get("/google/callback")
+def google_callback(code: str | None = None, error: str | None = None, db: Session = Depends(get_db)):
+    if error or not code:
+        return RedirectResponse(f"{settings.frontend_origin}/login?error=google_auth_failed")
+
+    token_res = httpx.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": settings.google_client_id,
+            "client_secret": settings.google_client_secret,
+            "redirect_uri": settings.google_redirect_uri,
+            "grant_type": "authorization_code",
+        },
+        timeout=10,
+    )
+    if token_res.status_code != 200:
+        logger.error("Google token exchange failed: %s", token_res.text)
+        return RedirectResponse(f"{settings.frontend_origin}/login?error=google_auth_failed")
+
+    access_token = token_res.json().get("access_token")
+
+    userinfo_res = httpx.get(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=10,
+    )
+    if userinfo_res.status_code != 200:
+        logger.error("Google userinfo fetch failed: %s", userinfo_res.text)
+        return RedirectResponse(f"{settings.frontend_origin}/login?error=google_auth_failed")
+
+    info = userinfo_res.json()
+    google_id = info.get("sub")
+    email = info.get("email")
+    name = info.get("name") or email
+
+    user = db.query(User).filter(User.google_id == google_id).first()
+    if not user:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            user.google_id = google_id
+        else:
+            user = User(full_name=name, email=email, google_id=google_id, hashed_password=None)
+            db.add(user)
+    db.commit()
