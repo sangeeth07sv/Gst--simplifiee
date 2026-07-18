@@ -1,8 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import Cookies from 'js-cookie'
@@ -16,7 +16,24 @@ import { apiFetch, ApiError } from '@/lib/api'
 
 export default function LoginPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [serverError, setServerError] = useState<string | null>(null)
+
+  // Handles the redirect back from GET /auth/google/callback, which sends
+  // ?token=...&has_business=... on success or ?error=google_auth_failed on
+  // failure (see backend/app/api/auth.py).
+  useEffect(() => {
+    const token = searchParams.get('token')
+    const hasBusiness = searchParams.get('has_business')
+    const error = searchParams.get('error')
+
+    if (token) {
+      Cookies.set('gst_genie_token', token, { expires: 7, sameSite: 'lax' })
+      router.replace(hasBusiness === 'true' ? '/dashboard' : '/onboarding')
+    } else if (error) {
+      setServerError('Google sign-in failed. Please try again.')
+    }
+  }, [searchParams, router])
 
   const {
     register,
