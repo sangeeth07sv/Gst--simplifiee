@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 10080  # 7 days
 
-    frontend_origin: str = "http://localhost:3000"
+    frontend_origin: str = "https://gst-simplifiee.vercel.app"
 
     google_client_id: str = ""
     google_client_secret: str = ""
