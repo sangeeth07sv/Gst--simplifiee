@@ -1,8 +1,10 @@
 import logging
+from urllib.parse import urlencode
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
-
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password, verify_password
@@ -22,7 +24,6 @@ def _has_business(db: Session, user_id) -> bool:
 def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists")
-
     user = User(
         full_name=payload.full_name,
         email=payload.email,
@@ -31,7 +32,6 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
-
     token = create_access_token(subject=str(user.id))
     return TokenResponse(access_token=token, has_business=False)
 
@@ -39,20 +39,17 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
-
     # Deliberately same error for "no such user" and "wrong password" —
     # avoids leaking which emails are registered.
     invalid_credentials = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password"
     )
-
     if not user or not user.hashed_password:
         raise invalid_credentials
     if not verify_password(payload.password, user.hashed_password):
         raise invalid_credentials
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been deactivated")
-
     token = create_access_token(subject=str(user.id))
     return TokenResponse(access_token=token, has_business=_has_business(db, user.id))
 
@@ -79,15 +76,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
 @router.get("/google/login")
 def google_login():
-    if not settings.google_client_id:
+    if not settings.google_client_id or not settings.google_redirect_uri:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Google Sign-In is not configured yet. Set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in backend/.env.",
-        )
-    # TODO: redirect to Google's OAuth consent screen once credentials exist.
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented yet")
-
-
-@router.get("/google/callback")
-def google_callback():
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented yet")
+            detail="Google Sign-In is not configured yet. Set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
