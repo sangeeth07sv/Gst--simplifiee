@@ -124,3 +124,10 @@ def google_callback(code: str | None = None, error: str | None = None, db: Sessi
             user = User(full_name=name, email=email, google_id=google_id, hashed_password=None)
             db.add(user)
     db.commit()
+    db.refresh(user)
+
+    jwt_token = create_access_token(subject=str(user.id))
+    has_business = "true" if _has_business(db, user.id) else "false"
+    return RedirectResponse(
+        f"{settings.frontend_origin}/login?token={jwt_token}&has_business={has_business}"
+    )
